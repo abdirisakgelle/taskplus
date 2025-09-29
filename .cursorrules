@@ -1,0 +1,203 @@
+# =========================================================
+# Cursor Rules – TaskPlus (Node/Express + React + Mongoose)
+# Purpose: Prevent bugs, enforce consistent patterns, and
+#          guide Cursor to make safe, production-ready edits.
+# =========================================================
+
+# ---------- Global Conventions ----------
+- Use modern ESM, async/await, and descriptive names.
+- Never hardcode secrets, URLs, or credentials. Always read from process.env via dotenv.
+- Prefer small, composable functions. Avoid side effects in modules.
+- Add/keep JSDoc for non-trivial functions and exported utilities.
+- Write idempotent scripts and migrations where possible.
+
+# ---------- Project Structure ----------
+- Keep Express app code under server/src:
+  - server/src/server.js (bootstrap only)
+  - server/src/db.js (db connection)
+  - server/src/routes/* (feature routers)
+  - server/src/models/* (Mongoose models)
+  - server/src/middlewares/* (auth, validation, error)
+  - server/src/utils/* (helpers, logger, pagination)
+- Keep React code under client/src with clear feature folders:
+  - client/src/pages/*, client/src/components/*, client/src/lib/*, client/src/hooks/*
+
+# ---------- Environment / Config ----------
+- Never invent new env keys; reuse or propose minimal new ones in README.
+- Validate required envs on startup. If missing, fail fast with a clear error.
+- For MongoDB:
+  - Use a single exported connectDB(uri) that sets strictQuery and logs connection status.
+  - Support both mongodb+srv and mongodb schemes; do not append authSource to SRV.
+  - Do not enable autoIndex in production unless explicitly requested.
+
+# ---------- API Design (Express) ----------
+- All endpoints must follow this response envelope:
+  - Success: { ok: true, data, meta? }
+  - Error:   { ok: false, error: { message, code?, details? } }
+- Use centralized error middleware (server/src/middlewares/error.js):
+  - Call next(err) from routes; never res.send inside catch unless rethrowing breaks flow.
+  - Map known errors (ValidationError, CastError, MongoServerError) to 4xx with messages.
+- Always validate input (zod or joi). Reject unknown fields (strip or fail).
+- Pagination defaults: ?page=1&limit=20 (limit <= 100). Return { total, page, limit } in meta.
+- Support filtering/sort via whitelisted fields only. Reject arbitrary $ operators from clients.
+- Security headers: enable CORS (whitelist), disable x-powered-by, trust proxy only if needed.
+- Include a health route: GET /api/health → { ok: true }.
+- Add cURL examples in route files for CREATE/READ/UPDATE/DELETE.
+
+# ---------- Mongoose / MongoDB ----------
+- Define schemas with { timestamps: true } and minimal, necessary indexes.
+- Add schema-level validation (enums, required, trim) and unique indexes where appropriate.
+- Use .lean() for read-only queries to avoid hydrated doc overhead.
+- Use projections to avoid overfetch (e.g., .select('name shift')).
+- Always guard against unbounded queries—require pagination or limits for list endpoints.
+- Prefer update validators: findByIdAndUpdate(id, body, { new: true, runValidators: true }).
+- Handle duplicate key errors (E11000) gracefully with 409 and clear field info.
+- Avoid map-reduce; prefer aggregation pipelines when necessary, with $match → $project → $sort order.
+- Before adding a new index, comment why (query pattern) and expected selectivity.
+
+# ---------- Auth & Security ----------
+- If auth is present:
+  - Use bcrypt for password hashing, min cost 10.
+  - Store JWT in HttpOnly cookies. CSRF-protect mutating routes if cookies are used.
+  - Never include password fields in responses. Use select: false in schema.
+- Sanitize inputs. Reject dangerous operators (__proto__, constructor, $where).
+- Rate-limit sensitive routes (auth, search) using express-rate-limit.
+- Log auth failures without leaking exact reasons to clients.
+
+# ---------- React Frontend ----------
+- Prefer functional components + hooks.
+- State rules:
+  - Server state via fetch + SWR/React Query style patterns (or simple fetch with proper loading/error).
+  - Local component state only for UI concerns.
+- Forms:
+  - Validate before submit. Show field-level errors. Disable submit during pending.
+- API calls:
+  - Always handle loading, error, and empty states.
+  - Use the shared fetch wrapper in client/src/lib/api.ts(x) with:
+    - Base URL from env (Vite: import.meta.env.VITE_API_URL or proxy /api)
+    - Response envelope parsing; throw on !ok with error.message
+- Lists:
+  - Implement pagination (page, limit) and keep params in URL (useSearchParams).
+- Do not inline huge styles. Use small CSS modules or Tailwind classes consistently.
+- Accessibility: add alt text, label inputs, keyboard focus, and roles where appropriate.
+
+# ---------- Error Handling & Logging ----------
+- No console.log in production paths; use a tiny logger util with levels (debug/info/warn/error).
+- In React, catch and render error boundaries for critical pages.
+- In Express, ensure unhandled rejections are caught (process.on handlers) and shutdown gracefully.
+
+# ---------- Testing (Light but Effective) ----------
+- For server routes: add minimal happy-path + validation-failure tests (Jest/Vitest + supertest).
+- For React: test critical forms and list pages (render, submit, pagination).
+- Avoid overly brittle snapshot tests; prefer behavioral assertions.
+
+# ---------- Performance & Reliability ----------
+- Do not block the event loop with heavy CPU in Express; offload or batch.
+- Use HTTP timeouts for outgoing requests. Abort on unmount in React.
+- Cache simple GETs on client side (stale-while-revalidate) where safe.
+- Guard against N+1 patterns in sequential awaits; batch with Promise.all when independent.
+
+# ---------- DX & Consistency ----------
+- Maintain a single, shared types file for API contracts (even in JS, document shapes via JSDoc).
+- Keep README updated when adding env vars, scripts, or endpoints.
+- When adding a route, include:
+  - Validation schema
+  - cURL examples
+  - Error cases (404, 400, 409) covered
+- Prefer diff-only edits; do not rewrite files unnecessarily.
+
+# ---------- Safe Defaults (Cursor MUST follow) ----------
+DO:
+  - Add try/catch around DB ops and call next(err) on failure.
+  - Use lean(), projections, and pagination for list endpoints.
+  - Keep API envelopes consistent ({ ok, data, meta } or { ok: false, error }).
+  - Validate request bodies and query params; strip unknown keys.
+  - Add at least one unit/integration test for new endpoints.
+  - Include comments explaining non-obvious logic and all indexes.
+
+DON'T:
+  - Introduce new global dependencies without clear justification.
+  - Expose stack traces or internal error details to clients.
+  - Perform unpaginated find() returning large collections.
+  - Mutate req.body directly; use validated/parsed objects.
+  - Create circular imports or cross-layer coupling (routes shouldn’t import React code).
+  - Change env var names silently.
+
+
+# ---------- React Frontend (Admin Dashboard Template Integration) ----------
+- Always reuse the existing **Frontend template** for frontend development.
+- Do not create brand new page/component structures unless absolutely necessary.
+- Place all new UI under the existing dashboard structure (layouts, navigation, theme).
+- When adding functionality:
+  - Extend or compose from existing template components (e.g., buttons, forms, tables).
+  - Follow the dashboard’s routing/navigation system (e.g., Sidebar links, top nav).
+  - Match styling strictly: Tailwind classes, theme tokens, or MUI configs already used in the template.
+- For pages, use the pre-defined layout (e.g., `DashboardLayout`) instead of raw `<div>` scaffolds.
+- For forms:
+  - Use the template’s form components (inputs, selects, date pickers).
+  - Use built-in validation/error display from the template instead of writing custom logic.
+- For tables/lists:
+  - Always use the admin template’s DataTable component (with pagination, search, filters).
+- For charts/analytics:
+  - Use the chart components provided (e.g., recharts, chart.js wrappers) from the template.
+- DO NOT:
+  - Import random new UI libraries without approval.
+  - Write plain HTML/CSS for layouts when a template component exists.
+  - Create duplicate components that already exist in the dashboard template.
+- Every new page/feature must integrate seamlessly into the existing admin dashboard design and navigation.
+
+
+# ---------- Example Snippets Cursor Should Reuse ----------
+
+# Express error middleware (server/src/middlewares/error.js)
+/**
+ * Centralized error handler.
+ * Maps known errors to 4xx; defaults to 500.
+ */
+export default function errorMiddleware(err, _req, res, _next) {
+  const isValidation = err.name === 'ValidationError' || err.name === 'ZodError'
+  const isCast = err.name === 'CastError'
+  const isDup = err.code === 11000
+
+  if (isValidation) {
+    return res.status(400).json({ ok: false, error: { message: 'Invalid input', details: err.errors ?? err.issues } })
+  }
+  if (isCast) {
+    return res.status(400).json({ ok: false, error: { message: 'Invalid id format' } })
+  }
+  if (isDup) {
+    return res.status(409).json({ ok: false, error: { message: 'Duplicate key', details: err.keyValue } })
+  }
+  const status = err.statusCode && Number.isInteger(err.statusCode) ? err.statusCode : 500
+  return res.status(status).json({ ok: false, error: { message: 'Internal server error' } })
+}
+
+# Pagination helper (server/src/utils/paginate.js)
+export function getPaging(q) {
+  const page = Math.max(parseInt(q.page ?? '1', 10), 1)
+  const limit = Math.min(Math.max(parseInt(q.limit ?? '20', 10), 1), 100)
+  const skip = (page - 1) * limit
+  return { page, limit, skip }
+}
+
+# Route pattern (use validation + envelope + lean)
+router.get('/', async (req, res, next) => {
+  try {
+    const { page, limit, skip } = getPaging(req.query)
+    const [items, total] = await Promise.all([
+      Model.find(/* optional filter */).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Model.countDocuments(/* same filter */)
+    ])
+    res.json({ ok: true, data: items, meta: { total, page, limit } })
+  } catch (err) {
+    next(err)
+  }
+})
+
+# Fetch wrapper (client/src/lib/api.js)
+export async function api(path, opts = {}) {
+  const res = await fetch(path, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...opts })
+  const json = await res.json().catch(() => ({}))
+  if (!json.ok) throw new Error(json?.error?.message || `Request failed (${res.status})`)
+  return json
+}

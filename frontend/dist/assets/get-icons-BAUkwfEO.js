@@ -1,0 +1,1 @@
+const s=i=>{const e=i.split(".").pop();return e==="fig"?"bxl:figma":e==="docs"?"iconamoon:file-light":e==="zip"?"bxs:file-archive":e==="pdf"?"bxs:file-pdf":e==="jpg"||e==="png"||e==="jpeg"?"bx-images":"bxs:file"};export{s as g};

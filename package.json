@@ -1,0 +1,14 @@
+{
+  "name": "taskplus",
+  "version": "1.0.0",
+  "description": "TaskPlus - Complete task management and operations platform",
+  "scripts": {
+    "build": "cd frontend && npm ci && npm run build",
+    "dev": "cd frontend && npm run dev",
+    "start": "cd backend && npm start",
+    "seed": "cd backend && npm run seed"
+  },
+  "keywords": ["task", "management", "operations", "dashboard"],
+  "author": "TaskPlus Team",
+  "license": "MIT"
+}

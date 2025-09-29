@@ -1,0 +1,1 @@
+import{j as a,H as s,D as n}from"./index-AWqnUruu.js";const o=({title:e})=>{const t=n;return a.jsx(s,{children:a.jsx("title",{children:e?`${e} | Rasket React- Responsive Admin Dashboard Template`:t})})},i=o;export{i as P};
