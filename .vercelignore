@@ -1,0 +1,8 @@
+backend/node_modules
+backend/.env
+backend/src/scripts
+*.log
+.DS_Store
+*.md
+!README.md
+!DEPLOYMENT_GUIDE.md
