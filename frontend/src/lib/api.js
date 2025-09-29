@@ -1,8 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || (
-  typeof window !== 'undefined' && window.location.origin.includes('vercel.app')
-    ? '/api'  // Production on Vercel
-    : 'http://localhost:8000/api'  // Local development
-);
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 /**
  * Generic API client with envelope handling

@@ -1,25 +1,27 @@
-import 'dotenv/config';
-import { connectDB } from '../backend/src/db.js';
-import app from '../backend/src/app.js';
+// api/index.js
+import 'dotenv/config'
+import { connectDB } from '../backend/src/db.js'
+import app from '../backend/src/app.js'
 
-// Cache connection across serverless invocations
-let isConnected = false;
+let connected = false
 
 export default async function handler(req, res) {
   try {
-    // Connect to MongoDB if not already connected
-    if (!isConnected) {
-      await connectDB();
-      isConnected = true;
+    const shouldConnect = process.env.SKIP_DB !== '1'
+
+    if (shouldConnect && !connected) {
+      if (!process.env.MONGODB_URI) {
+        console.error('MONGODB_URI is missing')
+        return res.status(500).json({ ok: false, error: 'MONGODB_URI missing' })
+      }
+      await connectDB()
+      connected = true
+      console.log('DB connected (cached).')
     }
 
-    // Handle the request with Express app
-    return app(req, res);
-  } catch (error) {
-    console.error('Serverless handler error:', error);
-    return res.status(500).json({
-      ok: false,
-      error: { message: 'Internal server error' }
-    });
+    return app(req, res)
+  } catch (err) {
+    console.error('Handler error:', err?.stack || err?.message || err)
+    return res.status(500).json({ ok: false, error: 'Internal server error' })
   }
 }
