@@ -5,8 +5,6 @@ import { getInvoiceById } from '@/helpers/data';
 import { currency } from '@/context/constants';
 import SubmissionButton from './components/SubmissionButton';
 import PageMetaData from '@/components/PageTitle';
-import logoDark from '@/assets/images/logo-dark-full.png';
-import logoLight from '@/assets/images/logo-light-full.png';
 const InvoiceDetail = () => {
   const [invoice, setInvoice] = useState();
   const {
@@ -32,8 +30,8 @@ const InvoiceDetail = () => {
                 <div className="clearfix">
                   <div className="float-sm-end">
                     <div className="auth-logo">
-                      <img className="logo-dark me-1" height={24} src={logoDark} alt="logo-dark" />
-                      <img className="logo-light me-1" height={24} src={logoLight} alt="logo-dark" />
+                      <img className="logo-dark me-1" height={24} src={'/Nasiye logo.png'} alt="logo-dark" />
+                      <img className="logo-light me-1" height={24} src={'/Nasiye logo.png'} alt="logo-light" />
                     </div>
                     <address className="mt-3">
                       1729 Bangor St,

@@ -2,85 +2,212 @@ import express from "express";
 import { FollowUp } from "../models/follow_ups.js";
 import { Ticket } from "../models/tickets.js";
 import { Employee } from "../models/employees.js";
-import { User } from "../models/users.js";
-import { Notification } from "../models/notifications.js";
+import { Review } from "../models/reviews.js";
+import { getNextId } from "../utils/counters.js";
 import { authRequired, requirePerm } from "../middleware/auth.js";
+import { User } from "../models/users.js";
 
 const router = express.Router();
+
+// Get pending follow-ups (tickets completed in last 7 days without resolved follow-up)
+router.get("/pending", authRequired, requirePerm('support.followups'), async (req, res, next) => {
+  try {
+    const { q = '', range = '7d', page = 1, pageSize = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(pageSize);
+    
+    // Calculate date range
+    const now = new Date();
+    let startDate;
+    switch (range) {
+      case '7d':
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case '30d':
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      default:
+        startDate = new Date(0); // All time
+    }
+    
+    // Build search filter
+    const searchFilter = {};
+    if (q) {
+      searchFilter.$or = [
+        { customer_phone: { $regex: q, $options: 'i' } },
+        { ticket_id: parseInt(q) || 0 }
+      ];
+    }
+    
+    // Find completed tickets in date range
+    const completedTickets = await Ticket.find({
+      resolution_status: 'Completed',
+      updatedAt: { $gte: startDate },
+      ...searchFilter
+    }).lean();
+    
+    // Get ticket IDs
+    const ticketIds = completedTickets.map(t => t.ticket_id);
+    
+    // Find existing follow-ups for these tickets
+    const existingFollowUps = await FollowUp.find({
+      ticket_id: { $in: ticketIds }
+    }).lean();
+    
+    // Create map of ticket_id -> follow_up
+    const followUpMap = {};
+    existingFollowUps.forEach(fu => {
+      followUpMap[fu.ticket_id] = fu;
+    });
+    
+    // Filter tickets that need follow-up (no follow-up or issue_solved is null/0)
+    const pendingTickets = completedTickets.filter(ticket => {
+      const followUp = followUpMap[ticket.ticket_id];
+      return !followUp || followUp.issue_solved === null || followUp.issue_solved === 0;
+    });
+    
+    // Get reviews for supervisor status
+    const reviews = await Review.find({
+      ticket_id: { $in: pendingTickets.map(t => t.ticket_id) }
+    }).sort({ createdAt: -1 }).lean();
+    
+    // Create map of ticket_id -> latest review
+    const reviewMap = {};
+    reviews.forEach(review => {
+      if (!reviewMap[review.ticket_id]) {
+        reviewMap[review.ticket_id] = review;
+      }
+    });
+    
+    // Format response
+    const result = pendingTickets.slice(skip, skip + parseInt(pageSize)).map(ticket => {
+      const followUp = followUpMap[ticket.ticket_id];
+      const review = reviewMap[ticket.ticket_id];
+      
+      return {
+        ticket_id: ticket.ticket_id,
+        customer_phone: ticket.customer_phone,
+        issue_type: ticket.issue_type,
+        resolution_status: ticket.resolution_status,
+        supervisor_status: review ? review.issue_status : '-',
+        date: review ? review.review_date : ticket.updatedAt,
+        follow_up_id: followUp ? followUp._id : null
+      };
+    });
+    
+    res.json({
+      ok: true,
+      data: result,
+      meta: {
+        total: pendingTickets.length,
+        page: parseInt(page),
+        pageSize: parseInt(pageSize)
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // Get follow-ups with filtering
 router.get("/", authRequired, requirePerm('support.followups'), async (req, res, next) => {
   try {
     const {
-      ticket_id,
-      follow_up_agent_id,
-      issue_solved,
-      satisfied,
-      repeated_issue,
-      date_from,
-      date_to,
       page = 1,
-      limit = 20
+      pageSize = 20,
+      agent_id,
+      issue_solved,
+      repeated_issue,
+      issue_category,
+      from,
+      to
     } = req.query;
 
     // Build filters
     const filters = {};
-    if (ticket_id) filters.ticket_id = Number(ticket_id);
-    if (follow_up_agent_id) filters.follow_up_agent_id = Number(follow_up_agent_id);
+    
+    if (agent_id) filters.follow_up_agent_id = Number(agent_id);
     if (issue_solved !== undefined) filters.issue_solved = issue_solved === 'true';
-    if (satisfied !== undefined) filters.satisfied = satisfied === 'true';
     if (repeated_issue !== undefined) filters.repeated_issue = repeated_issue === 'true';
-
+    
     // Date range filtering
-    if (date_from || date_to) {
+    if (from || to) {
       filters.follow_up_date = {};
-      if (date_from) filters.follow_up_date.$gte = new Date(date_from);
-      if (date_to) filters.follow_up_date.$lte = new Date(date_to);
+      if (from) filters.follow_up_date.$gte = new Date(from);
+      if (to) filters.follow_up_date.$lte = new Date(to);
+    }
+
+    // If filtering by issue category, we need to join with tickets
+    let pipeline = [];
+    
+    if (issue_category) {
+      pipeline = [
+        {
+          $lookup: {
+            from: 'tickets',
+            localField: 'ticket_id',
+            foreignField: 'ticket_id',
+            as: 'ticket'
+          }
+        },
+        { $unwind: '$ticket' },
+        { $match: { 'ticket.issue_category': issue_category } }
+      ];
     }
 
     // Pagination
     const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const limitNum = Math.min(100, Math.max(1, parseInt(pageSize)));
     const skip = (pageNum - 1) * limitNum;
 
-    // Execute query
-    const [followUps, total] = await Promise.all([
-      FollowUp.find(filters)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-      FollowUp.countDocuments(filters)
-    ]);
+    let followUps, total;
 
-    // Get ticket and agent details
-    const ticketIds = [...new Set(followUps.map(f => f.ticket_id))];
+    if (pipeline.length > 0) {
+      // Use aggregation for complex queries
+      pipeline.push(
+        { $match: filters },
+        { $sort: { follow_up_date: -1 } },
+        { $skip: skip },
+        { $limit: limitNum }
+      );
+      
+      const [results, countResults] = await Promise.all([
+        FollowUp.aggregate(pipeline),
+        FollowUp.aggregate([...pipeline.slice(0, -2), { $count: 'total' }])
+      ]);
+      
+      followUps = results;
+      total = countResults[0]?.total || 0;
+    } else {
+      // Simple query
+      [followUps, total] = await Promise.all([
+        FollowUp.find(filters)
+          .sort({ follow_up_date: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .lean(),
+        FollowUp.countDocuments(filters)
+      ]);
+    }
+
+    // Get agent details
     const agentIds = [...new Set(followUps.map(f => f.follow_up_agent_id).filter(Boolean))];
-
-    const [tickets, agents] = await Promise.all([
-      Ticket.find({ ticket_id: { $in: ticketIds } })
-        .select('ticket_id customer_phone issue_description resolution_status').lean(),
-      Employee.find({ employee_id: { $in: agentIds } })
-        .select('employee_id name').lean()
-    ]);
-
-    const ticketMap = new Map(tickets.map(t => [t.ticket_id, t]));
+    const agents = await Employee.find({ employee_id: { $in: agentIds } })
+      .select('employee_id name').lean();
     const agentMap = new Map(agents.map(a => [a.employee_id, a]));
 
     // Enrich follow-ups
     const enrichedFollowUps = followUps.map(followUp => ({
       ...followUp,
-      ticket_info: ticketMap.get(followUp.ticket_id) || null,
       agent_info: agentMap.get(followUp.follow_up_agent_id) || null
     }));
 
     res.json({
-      follow_ups: enrichedFollowUps,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
+      ok: true,
+      data: enrichedFollowUps,
+      meta: {
         total,
-        pages: Math.ceil(total / limitNum)
+        page: pageNum,
+        limit: limitNum
       }
     });
   } catch (err) {
@@ -89,29 +216,269 @@ router.get("/", authRequired, requirePerm('support.followups'), async (req, res,
 });
 
 // Get single follow-up
-router.get("/:id", authRequired, requirePerm('support.followups'), async (req, res, next) => {
+router.get("/:follow_up_id", authRequired, requirePerm('support.followups'), async (req, res, next) => {
   try {
-    const followUpId = Number(req.params.id);
+    const followUpId = Number(req.params.follow_up_id);
     const followUp = await FollowUp.findOne({ follow_up_id: followUpId }).lean();
     
     if (!followUp) {
-      return res.status(404).json({ message: "Follow-up not found" });
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Follow-up not found" } 
+      });
     }
 
-    // Get ticket and agent details
+    // Get related ticket and agent info
     const [ticket, agent] = await Promise.all([
       Ticket.findOne({ ticket_id: followUp.ticket_id }).lean(),
-      followUp.follow_up_agent_id ? 
-        Employee.findOne({ employee_id: followUp.follow_up_agent_id }).lean() : null
+      followUp.follow_up_agent_id ? Employee.findOne({ employee_id: followUp.follow_up_agent_id }).lean() : null
     ]);
 
-    const enrichedFollowUp = {
-      ...followUp,
-      ticket_info: ticket,
-      agent_info: agent
-    };
+    res.json({
+      ok: true,
+      data: {
+        ...followUp,
+        ticket_info: ticket,
+        agent_info: agent
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
-    res.json(enrichedFollowUp);
+// Update follow-up with business logic
+router.patch("/:follow_up_id", authRequired, requirePerm('support.followups'), async (req, res, next) => {
+  try {
+    const followUpId = Number(req.params.follow_up_id);
+    const {
+      issue_solved,
+      satisfied,
+      repeated_issue,
+      follow_up_notes,
+      follow_up_date
+    } = req.body;
+
+    const followUp = await FollowUp.findOne({ follow_up_id: followUpId });
+    if (!followUp) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Follow-up not found" } 
+      });
+    }
+
+    const updates = {};
+    if (issue_solved !== undefined) updates.issue_solved = issue_solved;
+    if (satisfied !== undefined) updates.satisfied = satisfied;
+    if (repeated_issue !== undefined) updates.repeated_issue = repeated_issue;
+    if (follow_up_notes !== undefined) updates.follow_up_notes = follow_up_notes;
+    if (follow_up_date !== undefined) updates.follow_up_date = new Date(follow_up_date);
+
+    const updatedFollowUp = await FollowUp.findOneAndUpdate(
+      { follow_up_id: followUpId },
+      updates,
+      { new: true, runValidators: true }
+    );
+
+    // Business Rule: Customer says Not Solved
+    if (issue_solved === false) {
+      await Ticket.findOneAndUpdate(
+        { ticket_id: followUp.ticket_id },
+        {
+          resolution_status: 'Pending',
+          first_call_resolution: 'No'
+          // Keep same agent_id
+        }
+      );
+    }
+
+    // Business Rule: Customer confirms Solved
+    if (issue_solved === true) {
+      // Check if ticket was never reopened to set FCR=Yes
+      const ticket = await Ticket.findOne({ ticket_id: followUp.ticket_id });
+      if (ticket && ticket.resolution_status === 'Completed') {
+        // Check if this is the first time it's being marked as solved
+        const previousFollowUps = await FollowUp.find({
+          ticket_id: followUp.ticket_id,
+          follow_up_id: { $lt: followUpId }
+        }).sort({ createdAt: -1 });
+
+        const wasReopened = previousFollowUps.some(f => f.issue_solved === false);
+        
+        if (!wasReopened) {
+          await Ticket.findOneAndUpdate(
+            { ticket_id: followUp.ticket_id },
+            { first_call_resolution: 'Yes' }
+          );
+        }
+      }
+    }
+
+    res.json({
+      ok: true,
+      data: updatedFollowUp
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Mark as solved
+router.patch("/:follow_up_id/solved", authRequired, requirePerm('support.followups'), async (req, res, next) => {
+  try {
+    const followUpId = Number(req.params.follow_up_id);
+    const { satisfied } = req.body;
+
+    const followUp = await FollowUp.findOne({ follow_up_id: followUpId });
+    if (!followUp) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Follow-up not found" } 
+      });
+    }
+
+    const updatedFollowUp = await FollowUp.findOneAndUpdate(
+      { follow_up_id: followUpId },
+      {
+        issue_solved: true,
+        satisfied: satisfied !== undefined ? satisfied : null
+      },
+      { new: true }
+    );
+
+    // Update ticket FCR if this is the first resolution
+    const ticket = await Ticket.findOne({ ticket_id: followUp.ticket_id });
+    if (ticket && ticket.resolution_status === 'Completed') {
+      const wasReopened = await FollowUp.findOne({
+        ticket_id: followUp.ticket_id,
+        follow_up_id: { $lt: followUpId },
+        issue_solved: false
+      });
+
+      if (!wasReopened) {
+        await Ticket.findOneAndUpdate(
+          { ticket_id: followUp.ticket_id },
+          { first_call_resolution: 'Yes' }
+        );
+      }
+    }
+
+    res.json({
+      ok: true,
+      data: updatedFollowUp
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Mark as not solved (reopens ticket)
+router.patch("/:follow_up_id/not-solved", authRequired, requirePerm('support.followups'), async (req, res, next) => {
+  try {
+    const followUpId = Number(req.params.follow_up_id);
+    const { follow_up_notes } = req.body;
+
+    const followUp = await FollowUp.findOne({ follow_up_id: followUpId });
+    if (!followUp) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Follow-up not found" } 
+      });
+    }
+
+    const updatedFollowUp = await FollowUp.findOneAndUpdate(
+      { follow_up_id: followUpId },
+      {
+        issue_solved: false,
+        repeated_issue: true,
+        follow_up_notes: follow_up_notes || updatedFollowUp.follow_up_notes
+      },
+      { new: true }
+    );
+
+    // Business Rule: Reopen ticket
+    await Ticket.findOneAndUpdate(
+      { ticket_id: followUp.ticket_id },
+      {
+        resolution_status: 'Pending',
+        first_call_resolution: 'No'
+        // Keep same agent_id
+      }
+    );
+
+    res.json({
+      ok: true,
+      data: updatedFollowUp
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// No answer - reschedule
+router.patch("/:follow_up_id/no-answer", authRequired, requirePerm('support.followups'), async (req, res, next) => {
+  try {
+    const followUpId = Number(req.params.follow_up_id);
+    const { follow_up_date, follow_up_notes } = req.body;
+
+    const followUp = await FollowUp.findOne({ follow_up_id: followUpId });
+    if (!followUp) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Follow-up not found" } 
+      });
+    }
+
+    const updatedFollowUp = await FollowUp.findOneAndUpdate(
+      { follow_up_id: followUpId },
+      {
+        follow_up_date: follow_up_date ? new Date(follow_up_date) : new Date(),
+        follow_up_notes: follow_up_notes || updatedFollowUp.follow_up_notes
+      },
+      { new: true }
+    );
+
+    res.json({
+      ok: true,
+      data: updatedFollowUp
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Assign to me
+router.patch("/:follow_up_id/assign-to-me", authRequired, requirePerm('support.followups'), async (req, res, next) => {
+  try {
+    const followUpId = Number(req.params.follow_up_id);
+    
+    // Get current user's employee_id
+    const user = await User.findOne({ user_id: req.user.user_id });
+    if (!user || !user.employee_id) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: { message: "User not associated with employee" } 
+      });
+    }
+
+    const followUp = await FollowUp.findOne({ follow_up_id: followUpId });
+    if (!followUp) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Follow-up not found" } 
+      });
+    }
+
+    const updatedFollowUp = await FollowUp.findOneAndUpdate(
+      { follow_up_id: followUpId },
+      { follow_up_agent_id: user.employee_id },
+      { new: true }
+    );
+
+    res.json({
+      ok: true,
+      data: updatedFollowUp
+    });
   } catch (err) {
     next(err);
   }
@@ -123,215 +490,74 @@ router.post("/", authRequired, requirePerm('support.followups'), async (req, res
     const {
       ticket_id,
       follow_up_agent_id,
-      follow_up_date,
       issue_solved,
       satisfied,
       repeated_issue,
-      follow_up_notes
+      follow_up_notes,
+      customer_location
     } = req.body;
-
-    if (!ticket_id) {
-      return res.status(400).json({ message: "Ticket ID is required" });
+    
+    // Validation
+    const errors = [];
+    if (issue_solved === undefined || issue_solved === null) {
+      errors.push({ field: 'issue_solved', detail: 'Select yes or no.' });
     }
-
-    // Validate ticket exists
-    const ticket = await Ticket.findOne({ ticket_id });
-    if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
+    if (issue_solved === 1 && (satisfied === undefined || satisfied === null)) {
+      errors.push({ field: 'satisfied', detail: 'Please indicate if you are satisfied.' });
     }
-
-    // Validate agent if provided
-    if (follow_up_agent_id) {
-      const agent = await Employee.findOne({ employee_id: follow_up_agent_id });
-      if (!agent) {
-        return res.status(400).json({ message: "Invalid follow-up agent" });
-      }
+    if (issue_solved === 0 && (!follow_up_notes || follow_up_notes.trim().length < 5)) {
+      errors.push({ field: 'follow_up_notes', detail: 'Please add at least 5 characters.' });
     }
-
+    
+    if (errors.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        error: {
+          message: 'Validation failed',
+          errors: errors
+        }
+      });
+    }
+    
+    const follow_up_id = await getNextId('follow_up');
+    
     const followUp = await FollowUp.create({
+      follow_up_id,
       ticket_id,
-      follow_up_agent_id: follow_up_agent_id || null,
-      follow_up_date: follow_up_date ? new Date(follow_up_date) : new Date(),
-      issue_solved: issue_solved || false,
-      satisfied: satisfied || false,
-      repeated_issue: repeated_issue || false,
+      follow_up_agent_id,
+      follow_up_date: new Date(),
+      issue_solved,
+      satisfied,
+      repeated_issue,
       follow_up_notes
     });
-
-    // Update ticket status if issue is solved
-    if (issue_solved && ticket.resolution_status !== 'Closed') {
-      await Ticket.findOneAndUpdate(
-        { ticket_id },
-        { resolution_status: 'Closed' }
-      );
-    }
-
-    // Notify ticket agent about follow-up
-    if (ticket.agent_id) {
-      const agentUser = await User.findOne({ employee_id: ticket.agent_id });
-      if (agentUser) {
-        await Notification.create({
-          user_id: agentUser.user_id,
-          title: "Follow-up Created",
-          message: `A follow-up has been created for ticket #${ticket_id}`,
-          type: "follow_up_created"
-        });
+    
+    // Update ticket based on follow-up results
+    const ticket = await Ticket.findOne({ ticket_id });
+    if (ticket) {
+      if (issue_solved === 1) {
+        // Issue solved - keep completed, set FCR to Yes if not already set
+        await Ticket.findOneAndUpdate(
+          { ticket_id },
+          { 
+            first_call_resolution: 'Yes',
+            ...(customer_location && { customer_location })
+          }
+        );
+      } else {
+        // Issue not solved - reopen ticket
+        await Ticket.findOneAndUpdate(
+          { ticket_id },
+          {
+            resolution_status: 'Pending',
+            first_call_resolution: 'No',
+            ...(customer_location && { customer_location })
+          }
+        );
       }
     }
-
-    res.status(201).json(followUp);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Update follow-up
-router.put("/:id", authRequired, requirePerm('support.followups'), async (req, res, next) => {
-  try {
-    const followUpId = Number(req.params.id);
-    const {
-      follow_up_agent_id,
-      follow_up_date,
-      issue_solved,
-      satisfied,
-      repeated_issue,
-      follow_up_notes
-    } = req.body;
-
-    const followUp = await FollowUp.findOne({ follow_up_id: followUpId });
-    if (!followUp) {
-      return res.status(404).json({ message: "Follow-up not found" });
-    }
-
-    // Validate agent if changing
-    if (follow_up_agent_id !== undefined && follow_up_agent_id !== followUp.follow_up_agent_id) {
-      if (follow_up_agent_id) {
-        const agent = await Employee.findOne({ employee_id: follow_up_agent_id });
-        if (!agent) {
-          return res.status(400).json({ message: "Invalid follow-up agent" });
-        }
-      }
-    }
-
-    const updates = {};
-    if (follow_up_agent_id !== undefined) updates.follow_up_agent_id = follow_up_agent_id;
-    if (follow_up_date !== undefined) updates.follow_up_date = new Date(follow_up_date);
-    if (issue_solved !== undefined) updates.issue_solved = issue_solved;
-    if (satisfied !== undefined) updates.satisfied = satisfied;
-    if (repeated_issue !== undefined) updates.repeated_issue = repeated_issue;
-    if (follow_up_notes !== undefined) updates.follow_up_notes = follow_up_notes;
-
-    const updatedFollowUp = await FollowUp.findOneAndUpdate(
-      { follow_up_id: followUpId },
-      updates,
-      { new: true }
-    );
-
-    // Update ticket status if issue status changed
-    if (issue_solved !== undefined) {
-      const ticket = await Ticket.findOne({ ticket_id: followUp.ticket_id });
-      if (ticket) {
-        const newStatus = issue_solved ? 'Closed' : 'Open';
-        if (ticket.resolution_status !== newStatus) {
-          await Ticket.findOneAndUpdate(
-            { ticket_id: followUp.ticket_id },
-            { resolution_status: newStatus }
-          );
-        }
-      }
-    }
-
-    res.json(updatedFollowUp);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Delete follow-up
-router.delete("/:id", authRequired, requirePerm('support.followups'), async (req, res, next) => {
-  try {
-    const followUpId = Number(req.params.id);
     
-    const deleted = await FollowUp.findOneAndDelete({ follow_up_id: followUpId });
-    if (!deleted) {
-      return res.status(404).json({ message: "Follow-up not found" });
-    }
-
-    res.json({ message: "Follow-up deleted successfully" });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Get follow-ups for a specific ticket
-router.get("/ticket/:ticketId", authRequired, requirePerm('support.followups'), async (req, res, next) => {
-  try {
-    const ticketId = Number(req.params.ticketId);
-    
-    const followUps = await FollowUp.find({ ticket_id: ticketId })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    // Get agent details
-    const agentIds = [...new Set(followUps.map(f => f.follow_up_agent_id).filter(Boolean))];
-    const agents = await Employee.find({ employee_id: { $in: agentIds } })
-      .select('employee_id name').lean();
-    const agentMap = new Map(agents.map(a => [a.employee_id, a]));
-
-    const enrichedFollowUps = followUps.map(followUp => ({
-      ...followUp,
-      agent_info: agentMap.get(followUp.follow_up_agent_id) || null
-    }));
-
-    res.json(enrichedFollowUps);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Get follow-up statistics
-router.get("/stats/overview", authRequired, requirePerm('support.followups'), async (req, res, next) => {
-  try {
-    const { agent_id, date_from, date_to } = req.query;
-    
-    let matchFilter = {};
-    if (agent_id) matchFilter.follow_up_agent_id = Number(agent_id);
-    
-    if (date_from || date_to) {
-      matchFilter.follow_up_date = {};
-      if (date_from) matchFilter.follow_up_date.$gte = new Date(date_from);
-      if (date_to) matchFilter.follow_up_date.$lte = new Date(date_to);
-    }
-
-    const stats = await FollowUp.aggregate([
-      { $match: matchFilter },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: 1 },
-          issues_solved: { $sum: { $cond: ["$issue_solved", 1, 0] } },
-          satisfied_customers: { $sum: { $cond: ["$satisfied", 1, 0] } },
-          repeated_issues: { $sum: { $cond: ["$repeated_issue", 1, 0] } }
-        }
-      }
-    ]);
-
-    const result = stats[0] || {
-      total: 0,
-      issues_solved: 0,
-      satisfied_customers: 0,
-      repeated_issues: 0
-    };
-
-    // Add calculated metrics
-    result.resolution_rate = result.total > 0 ? 
-      ((result.issues_solved / result.total) * 100).toFixed(2) : "0.00";
-    result.satisfaction_rate = result.total > 0 ? 
-      ((result.satisfied_customers / result.total) * 100).toFixed(2) : "0.00";
-    result.repeat_issue_rate = result.total > 0 ? 
-      ((result.repeated_issues / result.total) * 100).toFixed(2) : "0.00";
-
-    res.json(result);
+    res.status(201).json({ ok: true, data: followUp });
   } catch (err) {
     next(err);
   }

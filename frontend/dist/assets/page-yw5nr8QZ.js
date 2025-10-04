@@ -1,0 +1,10 @@
+import{j as e,R as o,C as d}from"./index-g8JsAD6D.js";import{P as n}from"./PageTitle-CxfJYhSt.js";import{C as t}from"./ComponentContainerCard-DTcgieva.js";import{R as i}from"./quill.snow-DUG3v1qL.js";import{C as a,a as c,b as h}from"./Card-BeXcCZYv.js";import"./divWithClassName-DiLhEsAW.js";let s="",l="";l=s=`<h3><span class="ql-size-large">Hello World!</span></h3>
+    <p><br/></p>
+    <h3>This is a simple editable area.</h3>
+    <p><br/></p>
+    <ul>
+      <li>Select a text to reveal the toolbar.</li>
+      <li>Edit rich document on-the-fly, so elastic!</li>
+    </ul>
+<p><br/></p>
+<p>End of simple area</p>`;const u=()=>{const r={toolbar:[[{font:[]},{size:[]}],["bold","italic","underline","strike"],[{color:[]},{background:[]}],[{script:"super"},{script:"sub"}],[{header:[!1,1,2,3,4,5,6]},"blockquote","code-block"],[{list:"ordered"},{list:"bullet"},{indent:"-1"},{indent:"+1"}],["direction",{align:[]}],["link","image","video"],["clean"]]};return e.jsx(t,{id:"quill-snow-editor",title:"Snow Editor",description:e.jsxs(e.Fragment,{children:["Use ",e.jsx("code",{children:"snow-editor"})," id to set snow editor."]}),children:e.jsx(i,{id:"snow-editor",modules:r,defaultValue:l,theme:"snow"})})},m=()=>e.jsx(t,{id:"quill-snow-editor",title:"Snow Editor",description:e.jsxs(e.Fragment,{children:["Use ",e.jsx("code",{children:"snow-editor"})," id to set snow editor."]}),children:e.jsx("div",{id:"snow-editor",style:{height:300},children:e.jsx(i,{id:"bubble-editor",defaultValue:s,theme:"bubble",style:{height:300}})})}),b=()=>e.jsxs(e.Fragment,{children:[e.jsx(u,{}),e.jsx(m,{})]}),C=()=>e.jsxs(e.Fragment,{children:[e.jsx(n,{title:"Editors"}),e.jsx(o,{children:e.jsxs(d,{xl:12,children:[e.jsx(a,{children:e.jsxs(c,{children:[e.jsxs(h,{as:"h5",className:"mb-1 anchor",id:"overview",children:["Overview",e.jsx("a",{className:"btn btn-sm btn-outline-success rounded-2 float-end",href:"https://quilljs.com/",target:"_blank",children:"Official Website"})]}),e.jsx("p",{className:"text-muted mb-3",children:"Quilljs is a lightweight and powerful datetime picker."})]})}),e.jsx(b,{})]})})]});export{C as default};

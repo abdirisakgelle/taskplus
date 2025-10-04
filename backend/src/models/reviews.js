@@ -1,26 +1,46 @@
-import mongoose from "mongoose";
-import { nextId } from "../counters.js";
+import mongoose from 'mongoose';
 
-const schema = new mongoose.Schema({
-  review_id: { type: Number, unique: true, index: true },
-  ticket_id: { type: Number, index: true },
-  reviewer_id: { type: Number, index: true },
-  review_date: { type: Date },
-  issue_status: { type: String },
-  resolved: { type: Boolean },
-  notes: { type: String },
-  createdAt: { type: Date, default: () => new Date() },
-  updatedAt: { type: Date, default: () => new Date() },
-});
-
-schema.pre("save", async function (next) {
-  if (this.isNew && (this.review_id === undefined || this.review_id === null)) {
-    this.review_id = await nextId("reviews");
+const reviewSchema = new mongoose.Schema({
+  review_id: {
+    type: Number,
+    unique: true,
+    required: true
+  },
+  ticket_id: {
+    type: Number,
+    ref: 'Ticket',
+    required: true
+  },
+  reviewer_id: {
+    type: Number,
+    ref: 'Employee',
+    required: true
+  },
+  review_date: {
+    type: Date,
+    default: Date.now
+  },
+  issue_status: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  resolved: {
+    type: Boolean,
+    required: true
+  },
+  notes: {
+    type: String,
+    trim: true
   }
-  this.updatedAt = new Date();
-  next();
+}, {
+  timestamps: true
 });
 
-export const Review = mongoose.model("reviews", schema);
+// Indexes for performance
+reviewSchema.index({ review_id: 1 }, { unique: true });
+reviewSchema.index({ ticket_id: 1 });
+reviewSchema.index({ reviewer_id: 1 });
+reviewSchema.index({ review_date: -1 });
 
-
+export const Review = mongoose.model('Review', reviewSchema);

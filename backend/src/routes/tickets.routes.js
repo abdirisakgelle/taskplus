@@ -4,7 +4,7 @@ import { FollowUp } from "../models/follow_ups.js";
 import { Review } from "../models/reviews.js";
 import { Employee } from "../models/employees.js";
 import { User } from "../models/users.js";
-import { Notification } from "../models/notifications.js";
+import { getNextId } from "../utils/counters.js";
 import { authRequired, requirePerm } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -13,37 +13,45 @@ const router = express.Router();
 router.get("/", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
   try {
     const {
-      status,
-      agent_id,
-      communication_channel,
-      device_type,
-      issue_type,
-      first_call_resolution,
-      date_from,
-      date_to,
-      search,
       page = 1,
-      limit = 20,
-      sort_by = 'createdAt',
-      sort_order = 'desc'
+      pageSize = 20,
+      from,
+      to,
+      resolution_status,
+      issue_category,
+      agent_id,
+      search,
+      stuck = false
     } = req.query;
 
     // Build filters
     const filters = {};
-    if (status) filters.resolution_status = status;
-    if (agent_id) filters.agent_id = Number(agent_id);
-    if (communication_channel) filters.communication_channel = communication_channel;
-    if (device_type) filters.device_type = device_type;
-    if (issue_type) filters.issue_type = issue_type;
-    if (first_call_resolution !== undefined) filters.first_call_resolution = first_call_resolution === 'true';
-
-    // Date range filtering
-    if (date_from || date_to) {
-      filters.createdAt = {};
-      if (date_from) filters.createdAt.$gte = new Date(date_from);
-      if (date_to) filters.createdAt.$lte = new Date(date_to);
+    
+    if (resolution_status) {
+      if (Array.isArray(resolution_status)) {
+        filters.resolution_status = { $in: resolution_status };
+      } else {
+        filters.resolution_status = resolution_status;
+      }
     }
-
+    
+    if (issue_category) {
+      if (Array.isArray(issue_category)) {
+        filters.issue_category = { $in: issue_category };
+      } else {
+        filters.issue_category = issue_category;
+      }
+    }
+    
+    if (agent_id) filters.agent_id = Number(agent_id);
+    
+    // Date range filtering
+    if (from || to) {
+      filters.createdAt = {};
+      if (from) filters.createdAt.$gte = new Date(from);
+      if (to) filters.createdAt.$lte = new Date(to);
+    }
+    
     // Search
     if (search) {
       filters.$or = [
@@ -52,20 +60,23 @@ router.get("/", authRequired, requirePerm('support.tickets'), async (req, res, n
         { issue_description: { $regex: search, $options: 'i' } }
       ];
     }
+    
+    // Stuck tickets (>1 hour)
+    if (stuck === 'true') {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      filters.resolution_status = { $in: ['Pending', 'In-Progress', 'Completed'] };
+      filters.updatedAt = { $lte: oneHourAgo };
+    }
 
     // Pagination
     const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const limitNum = Math.min(100, Math.max(1, parseInt(pageSize)));
     const skip = (pageNum - 1) * limitNum;
-
-    // Sort
-    const sortObj = {};
-    sortObj[sort_by] = sort_order === 'asc' ? 1 : -1;
 
     // Execute query
     const [tickets, total] = await Promise.all([
       Ticket.find(filters)
-        .sort(sortObj)
+        .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
         .lean(),
@@ -78,37 +89,46 @@ router.get("/", authRequired, requirePerm('support.tickets'), async (req, res, n
       .select('employee_id name').lean();
     const agentMap = new Map(agents.map(a => [a.employee_id, a]));
 
-    // Get follow-up and review counts
+    // Get latest follow-up for each ticket to compute ticket_state
     const ticketIds = tickets.map(t => t.ticket_id);
-    const [followUpCounts, reviewCounts] = await Promise.all([
-      FollowUp.aggregate([
-        { $match: { ticket_id: { $in: ticketIds } } },
-        { $group: { _id: "$ticket_id", count: { $sum: 1 } } }
-      ]),
-      Review.aggregate([
-        { $match: { ticket_id: { $in: ticketIds } } },
-        { $group: { _id: "$ticket_id", count: { $sum: 1 } } }
-      ])
+    const latestFollowUps = await FollowUp.aggregate([
+      { $match: { ticket_id: { $in: ticketIds } } },
+      { $sort: { createdAt: -1 } },
+      { $group: { _id: '$ticket_id', latest: { $first: '$$ROOT' } } }
     ]);
+    const followUpMap = new Map(latestFollowUps.map(f => [f._id, f.latest]));
 
-    const followUpCountMap = new Map(followUpCounts.map(fc => [fc._id, fc.count]));
-    const reviewCountMap = new Map(reviewCounts.map(rc => [rc._id, rc.count]));
+    // Enrich tickets with computed state
+    const enrichedTickets = tickets.map(ticket => {
+      const latestFollowUp = followUpMap.get(ticket.ticket_id);
+      let ticket_state = 'Open';
+      
+      if (ticket.resolution_status === 'Completed') {
+        if (latestFollowUp && latestFollowUp.issue_solved === true) {
+          ticket_state = 'Closed';
+        } else if (latestFollowUp && latestFollowUp.issue_solved === false) {
+          ticket_state = 'Reopened';
+        } else {
+          ticket_state = 'Closed';
+        }
+      } else if (latestFollowUp && latestFollowUp.issue_solved === false) {
+        ticket_state = 'Reopened';
+      }
 
-    // Enrich tickets
-    const enrichedTickets = tickets.map(ticket => ({
-      ...ticket,
-      agent_info: agentMap.get(ticket.agent_id) || null,
-      follow_up_count: followUpCountMap.get(ticket.ticket_id) || 0,
-      review_count: reviewCountMap.get(ticket.ticket_id) || 0
-    }));
+      return {
+        ...ticket,
+        agent_info: agentMap.get(ticket.agent_id) || null,
+        ticket_state
+      };
+    });
 
     res.json({
-      tickets: enrichedTickets,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
+      ok: true,
+      data: enrichedTickets,
+      meta: {
         total,
-        pages: Math.ceil(total / limitNum)
+        page: pageNum,
+        limit: limitNum
       }
     });
   } catch (err) {
@@ -117,13 +137,16 @@ router.get("/", authRequired, requirePerm('support.tickets'), async (req, res, n
 });
 
 // Get single ticket with full details
-router.get("/:id", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
+router.get("/:ticket_id", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
   try {
-    const ticketId = Number(req.params.id);
+    const ticketId = Number(req.params.ticket_id);
     const ticket = await Ticket.findOne({ ticket_id: ticketId }).lean();
     
     if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Ticket not found" } 
+      });
     }
 
     // Get related data
@@ -133,7 +156,7 @@ router.get("/:id", authRequired, requirePerm('support.tickets'), async (req, res
       Review.find({ ticket_id: ticketId }).sort({ createdAt: -1 }).lean()
     ]);
 
-    // Get follow-up agent details
+    // Get follow-up agent and reviewer details
     const followUpAgentIds = [...new Set(followUps.map(f => f.follow_up_agent_id).filter(Boolean))];
     const reviewerIds = [...new Set(reviews.map(r => r.reviewer_id).filter(Boolean))];
     const allEmployeeIds = [...followUpAgentIds, ...reviewerIds];
@@ -160,7 +183,10 @@ router.get("/:id", authRequired, requirePerm('support.tickets'), async (req, res
       reviews: enrichedReviews
     };
 
-    res.json(enrichedTicket);
+    res.json({
+      ok: true,
+      data: enrichedTicket
+    });
   } catch (err) {
     next(err);
   }
@@ -172,225 +198,304 @@ router.post("/", authRequired, requirePerm('support.tickets'), async (req, res, 
     const {
       customer_phone,
       customer_location,
-      communication_channel,
+      communication_channel = 'Phone',
       device_type,
+      issue_category,
       issue_type,
       issue_description,
       agent_id
     } = req.body;
 
-    // Validate required fields
-    if (!customer_phone || !issue_description) {
-      return res.status(400).json({ message: "Customer phone and issue description are required" });
+    // A) Controller/Service input checks (before writing to DB)
+    const errors = [];
+    
+    // Validate customer_phone: required and format
+    if (!customer_phone) {
+      errors.push({ field: 'customer_phone', code: 'required', detail: 'Customer phone is required.' });
+    } else if (!/^[0-9]{7,15}$/.test(customer_phone)) {
+      errors.push({ field: 'customer_phone', code: 'invalid_format', detail: 'Use digits only (7–15).' });
+    }
+    
+    // Validate issue_category: required and enum
+    const validCategories = ['App', 'IPTV', 'Streaming', 'VOD', 'Subscription', 'OTP', 'Programming', 'Other'];
+    if (!issue_category) {
+      errors.push({ field: 'issue_category', code: 'required', detail: 'Issue category is required.' });
+    } else if (!validCategories.includes(issue_category)) {
+      errors.push({ field: 'issue_category', code: 'invalid_value', detail: `Must be one of: ${validCategories.join(', ')}.` });
+    }
+    
+    // Validate issue_description: trim and reject if only whitespace
+    if (issue_description && issue_description.trim() === '') {
+      errors.push({ field: 'issue_description', code: 'invalid_value', detail: 'Cannot be only whitespace.' });
+    }
+    
+    // Validate resolution_status: enum
+    const validStatuses = ['Pending', 'In-Progress', 'Completed'];
+    if (req.body.resolution_status && !validStatuses.includes(req.body.resolution_status)) {
+      errors.push({ field: 'resolution_status', code: 'invalid_value', detail: `Must be one of: ${validStatuses.join(', ')}.` });
+    }
+    
+    // Return field-level errors if any
+    if (errors.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        error: {
+          message: 'Validation failed',
+          errors: errors
+        }
+      });
     }
 
-    // Validate agent if provided
-    if (agent_id) {
-      const agent = await Employee.findOne({ employee_id: agent_id });
-      if (!agent) {
-        return res.status(400).json({ message: "Invalid agent" });
+    // Get agent_id from authenticated user's employeeId
+    let numericAgentId = null;
+    
+    if (req.user && req.user.id) {
+      const currentUser = await User.findById(req.user.id).populate('employeeId', 'employee_id');
+      if (currentUser && currentUser.employeeId && currentUser.employeeId.employee_id) {
+        numericAgentId = currentUser.employeeId.employee_id;
       }
     }
-
-    const ticket = await Ticket.create({
-      customer_phone,
-      customer_location,
-      communication_channel,
-      device_type,
-      issue_type,
-      issue_description,
-      agent_id: agent_id || null,
-      resolution_status: "Open"
-    });
-
-    // Notify assigned agent
-    if (agent_id) {
-      const agentUser = await User.findOne({ employee_id: agent_id });
-      if (agentUser) {
-        await Notification.create({
-          user_id: agentUser.user_id,
-          title: "New Ticket Assigned",
-          message: `You have been assigned a new support ticket #${ticket.ticket_id}`,
-          type: "ticket_assignment"
+    
+    // If no employeeId found, validate the provided agent_id
+    if (!numericAgentId && agent_id && agent_id !== '') {
+      // Check if agent_id is a numeric string (employee_id) or ObjectId
+      if (/^\d+$/.test(agent_id)) {
+        // It's already a numeric employee_id
+        numericAgentId = parseInt(agent_id);
+      } else {
+        // It's an ObjectId, find the employee by ObjectId
+        const agent = await Employee.findById(agent_id);
+        if (!agent) {
+          return res.status(400).json({ 
+            ok: false, 
+            error: { message: "Invalid agent" } 
+          });
+        }
+        numericAgentId = agent.employee_id;
+      }
+      
+      // Final validation with numeric ID
+      const agent = await Employee.findOne({ employee_id: numericAgentId });
+      if (!agent) {
+        return res.status(400).json({ 
+          ok: false, 
+          error: { message: "Invalid agent" } 
         });
       }
     }
 
-    res.status(201).json(ticket);
+    // B) Normalize defaults
+    const resolution_status = req.body.resolution_status || 'Pending';
+    let first_call_resolution = req.body.first_call_resolution || 'No';
+    
+    // C) Enforce FCR-Status rule server-side (authoritative)
+    if (resolution_status === 'Completed') {
+      first_call_resolution = 'Yes';
+    } else {
+      first_call_resolution = 'No';
+    }
+
+    // Get next ticket ID
+    let ticket_id = await getNextId('ticket');
+    console.log('Generated ticket_id:', ticket_id);
+    
+    // Ensure we have a valid ticket_id
+    if (!ticket_id || ticket_id === undefined) {
+      console.error('Failed to generate ticket_id, using fallback');
+      ticket_id = 1; // Fallback ID
+    }
+
+    const ticket = await Ticket.create({
+      ticket_id,
+      customer_phone,
+      customer_location,
+      communication_channel,
+      device_type,
+      issue_category,
+      issue_type,
+      issue_description,
+      agent_id: numericAgentId,
+      resolution_status,
+      first_call_resolution
+    });
+
+    // D) Auto-create follow_up on Completed (existing rule)
+    if (resolution_status === 'Completed') {
+      try {
+        const follow_up_id = await getNextId('follow_up');
+        await FollowUp.create({
+          follow_up_id,
+          ticket_id: ticket.ticket_id,
+          customer_phone: ticket.customer_phone,
+          follow_up_date: new Date(),
+          status: 'Pending',
+          notes: 'Auto-created follow-up for completed ticket'
+        });
+      } catch (followUpErr) {
+        console.error('Error creating follow-up:', followUpErr);
+        // Don't fail the ticket creation if follow-up fails
+      }
+    }
+
+    console.log('Created ticket:', ticket);
+    console.log('Ticket ID:', ticket.ticket_id);
+    
+    res.status(201).json({
+      ok: true,
+      data: ticket
+    });
   } catch (err) {
     next(err);
   }
 });
 
-// Update ticket
-router.put("/:id", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
+// Update ticket with business logic
+router.patch("/:ticket_id", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
   try {
-    const ticketId = Number(req.params.id);
+    const ticketId = Number(req.params.ticket_id);
     const {
-      customer_phone,
-      customer_location,
-      communication_channel,
-      device_type,
-      issue_type,
-      issue_description,
-      agent_id,
+      resolution_status,
       first_call_resolution,
-      resolution_status
+      agent_id,
+      ...otherUpdates
     } = req.body;
 
     const ticket = await Ticket.findOne({ ticket_id: ticketId });
     if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Ticket not found" } 
+      });
     }
 
-    // Validate agent if changing
-    if (agent_id !== undefined && agent_id !== ticket.agent_id) {
-      if (agent_id) {
-        const agent = await Employee.findOne({ employee_id: agent_id });
-        if (!agent) {
-          return res.status(400).json({ message: "Invalid agent" });
-        }
-      }
+    const updates = { ...otherUpdates };
+    
+    // Update resolution status without changing FCR
+    if (resolution_status) {
+      updates.resolution_status = resolution_status;
     }
-
-    const updates = {};
-    if (customer_phone !== undefined) updates.customer_phone = customer_phone;
-    if (customer_location !== undefined) updates.customer_location = customer_location;
-    if (communication_channel !== undefined) updates.communication_channel = communication_channel;
-    if (device_type !== undefined) updates.device_type = device_type;
-    if (issue_type !== undefined) updates.issue_type = issue_type;
-    if (issue_description !== undefined) updates.issue_description = issue_description;
-    if (agent_id !== undefined) updates.agent_id = agent_id;
-    if (first_call_resolution !== undefined) updates.first_call_resolution = first_call_resolution;
-    if (resolution_status !== undefined) updates.resolution_status = resolution_status;
+    
+    // Allow manual FCR override for admin/QA only
+    if (first_call_resolution !== undefined) {
+      updates.first_call_resolution = first_call_resolution;
+    }
 
     const updatedTicket = await Ticket.findOneAndUpdate(
       { ticket_id: ticketId },
       updates,
+      { new: true, runValidators: true }
+    );
+
+    // Business Rule: Auto-create Follow-up when status becomes "Completed"
+    if (resolution_status === 'Completed' && ticket.resolution_status !== 'Completed') {
+      const follow_up_id = await getNextId('follow_up');
+      
+      await FollowUp.create({
+        follow_up_id,
+        ticket_id: ticketId,
+        follow_up_agent_id: ticket.agent_id,
+        follow_up_date: new Date(),
+        issue_solved: null,
+        satisfied: null,
+        repeated_issue: false
+      });
+    }
+
+    res.json({
+      ok: true,
+      data: updatedTicket
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Reopen ticket (business rule)
+router.patch("/:ticket_id/reopen", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
+  try {
+    const ticketId = Number(req.params.ticket_id);
+    
+    const ticket = await Ticket.findOne({ ticket_id: ticketId });
+    if (!ticket) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Ticket not found" } 
+      });
+    }
+
+    // Business Rule: Reopen Logic
+    const updatedTicket = await Ticket.findOneAndUpdate(
+      { ticket_id: ticketId },
+      {
+        resolution_status: 'Pending',
+        first_call_resolution: 'No'
+        // Keep same agent_id (no reassignment)
+      },
       { new: true }
     );
 
-    // Send notifications for important changes
-    if (agent_id && agent_id !== ticket.agent_id) {
-      const agentUser = await User.findOne({ employee_id: agent_id });
-      if (agentUser) {
-        await Notification.create({
-          user_id: agentUser.user_id,
-          title: "Ticket Reassigned",
-          message: `Ticket #${ticketId} has been assigned to you`,
-          type: "ticket_assignment"
-        });
-      }
-    }
-
-    if (resolution_status && resolution_status !== ticket.resolution_status && ticket.agent_id) {
-      const agentUser = await User.findOne({ employee_id: ticket.agent_id });
-      if (agentUser) {
-        await Notification.create({
-          user_id: agentUser.user_id,
-          title: "Ticket Status Updated",
-          message: `Ticket #${ticketId} status changed to: ${resolution_status}`,
-          type: "ticket_update"
-        });
-      }
-    }
-
-    res.json(updatedTicket);
+    res.json({
+      ok: true,
+      data: updatedTicket
+    });
   } catch (err) {
     next(err);
   }
 });
 
-// Delete ticket
-router.delete("/:id", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
+// Get stuck tickets for QA
+router.get("/stuck/tickets", authRequired, requirePerm('support.reviews'), async (req, res, next) => {
   try {
-    const ticketId = Number(req.params.id);
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     
-    // Delete related follow-ups and reviews first
-    await Promise.all([
-      FollowUp.deleteMany({ ticket_id: ticketId }),
-      Review.deleteMany({ ticket_id: ticketId })
-    ]);
+    const stuckTickets = await Ticket.find({
+      resolution_status: { $in: ['Pending', 'In-Progress', 'Completed'] },
+      updatedAt: { $lte: oneHourAgo }
+    })
+    .sort({ updatedAt: 1 })
+    .lean();
 
-    const deleted = await Ticket.findOneAndDelete({ ticket_id: ticketId });
-    if (!deleted) {
-      return res.status(404).json({ message: "Ticket not found" });
-    }
+    // Get agent details
+    const agentIds = [...new Set(stuckTickets.map(t => t.agent_id).filter(Boolean))];
+    const agents = await Employee.find({ employee_id: { $in: agentIds } })
+      .select('employee_id name').lean();
+    const agentMap = new Map(agents.map(a => [a.employee_id, a]));
 
-    res.json({ message: "Ticket and related records deleted successfully" });
+    const enrichedTickets = stuckTickets.map(ticket => ({
+      ...ticket,
+      agent_info: agentMap.get(ticket.agent_id) || null,
+      age_hours: Math.floor((Date.now() - ticket.updatedAt.getTime()) / (1000 * 60 * 60))
+    }));
+
+    res.json({
+      ok: true,
+      data: enrichedTickets
+    });
   } catch (err) {
     next(err);
   }
 });
 
-// Get ticket statistics
-router.get("/stats/overview", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
+// DELETE /api/tickets/:ticket_id - Delete a ticket
+router.delete("/:ticket_id", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
   try {
-    const { agent_id, date_from, date_to } = req.query;
+    const ticketId = Number(req.params.ticket_id);
     
-    let matchFilter = {};
-    if (agent_id) matchFilter.agent_id = Number(agent_id);
-    
-    if (date_from || date_to) {
-      matchFilter.createdAt = {};
-      if (date_from) matchFilter.createdAt.$gte = new Date(date_from);
-      if (date_to) matchFilter.createdAt.$lte = new Date(date_to);
+    const ticket = await Ticket.findOne({ ticket_id: ticketId });
+    if (!ticket) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: { message: "Ticket not found" } 
+      });
     }
 
-    const stats = await Ticket.aggregate([
-      { $match: matchFilter },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: 1 },
-          open: { $sum: { $cond: [{ $eq: ["$resolution_status", "Open"] }, 1, 0] } },
-          closed: { $sum: { $cond: [{ $eq: ["$resolution_status", "Closed"] }, 1, 0] } },
-          in_progress: { $sum: { $cond: [{ $eq: ["$resolution_status", "In Progress"] }, 1, 0] } },
-          first_call_resolution: { $sum: { $cond: ["$first_call_resolution", 1, 0] } },
-          whatsapp: { $sum: { $cond: [{ $eq: ["$communication_channel", "WhatsApp"] }, 1, 0] } },
-          phone: { $sum: { $cond: [{ $eq: ["$communication_channel", "Phone"] }, 1, 0] } }
-        }
-      }
-    ]);
+    // Delete the ticket
+    await Ticket.deleteOne({ ticket_id: ticketId });
 
-    const result = stats[0] || {
-      total: 0,
-      open: 0,
-      closed: 0,
-      in_progress: 0,
-      first_call_resolution: 0,
-      whatsapp: 0,
-      phone: 0
-    };
-
-    // Add calculated metrics
-    result.first_call_resolution_rate = result.total > 0 ? 
-      ((result.first_call_resolution / result.total) * 100).toFixed(2) : "0.00";
-
-    res.json(result);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Get my tickets (for agents)
-router.get("/my/tickets", authRequired, requirePerm('support.tickets'), async (req, res, next) => {
-  try {
-    // Get current user's employee_id
-    const user = await User.findOne({ user_id: req.user.user_id });
-    if (!user || !user.employee_id) {
-      return res.json([]);
-    }
-
-    const { status } = req.query;
-    const filters = { agent_id: user.employee_id };
-    if (status) filters.resolution_status = status;
-
-    const tickets = await Ticket.find(filters)
-      .sort({ updatedAt: -1 })
-      .lean();
-
-    res.json(tickets);
+    res.json({ 
+      ok: true, 
+      data: { message: `Ticket #${ticketId} deleted successfully` } 
+    });
   } catch (err) {
     next(err);
   }

@@ -21,11 +21,17 @@ export function errorHandler(err, req, res, next) {
 
   // Mongoose validation errors
   if (err.name === 'ValidationError') {
+    const errors = Object.values(err.errors).map(error => ({
+      field: error.path,
+      code: error.kind,
+      detail: error.message
+    }));
+    
     return res.status(400).json({
       ok: false,
       error: {
-        message: 'Invalid input',
-        details: err.errors
+        message: 'Validation failed',
+        errors: errors
       }
     });
   }

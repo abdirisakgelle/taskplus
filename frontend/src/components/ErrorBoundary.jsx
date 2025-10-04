@@ -34,7 +34,7 @@ class ErrorBoundary extends React.Component {
           zIndex: 9999,
           flexDirection: 'column'
         }}>
-          <img alt="Logo" src="/logo-dark-full.png" style={{ height: '10%', marginBottom: '20px' }} />
+          <img alt="Logo" src="/Nasiye logo.png" style={{ height: '10%', marginBottom: '20px' }} />
           <div style={{ textAlign: 'center' }}>
             <p>Loading application...</p>
             <button 

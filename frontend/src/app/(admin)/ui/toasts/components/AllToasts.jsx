@@ -2,8 +2,6 @@ import useToggle from '@/hooks/useToggle';
 import { useState } from 'react';
 import { Button, Col, Form, Row, Toast, ToastBody, ToastContainer, ToastHeader } from 'react-bootstrap';
 import ReactSelect from 'react-select';
-import logoDark from '@/assets/images/logo-dark.png';
-import logoLight from '@/assets/images/logo-light.png';
 import ComponentContainerCard from '@/components/ComponentContainerCard';
 const BasicToast = () => {
   const {
@@ -17,8 +15,8 @@ const BasicToast = () => {
       <Toast className="fade d-block opacity-100" role="alert" onClose={hide} show={!isOpen}>
         <ToastHeader closeButton>
           <div className="auth-logo d-inline-block me-auto">
-            <img className="logo-dark" src={logoDark} alt="logo-dark" height={18} />
-            <img className="logo-light" src={logoLight} alt="logo-light" height={18} />
+            <img className="logo-dark" src={'/Nasiye logo.png'} alt="logo-dark" height={18} />
+            <img className="logo-light" src={'/Nasiye logo.png'} alt="logo-light" height={18} />
           </div>
           <div className="float-end">
             <small>11 mins ago</small>
@@ -41,8 +39,8 @@ const LiveExample = () => {
         <Toast show={isOpen} onClose={toggle} id="liveToastDefault" role="alert" aria-live="assertive" aria-atomic="true">
           <ToastHeader closeButton>
             <div className="auth-logo d-inline-block me-auto">
-              <img className="logo-dark" src={logoDark} alt="logo-dark" height={18} />
-              <img className="logo-light" src={logoLight} alt="logo-light" height={18} />
+              <img className="logo-dark" src={'/Nasiye logo.png'} alt="logo-dark" height={18} />
+              <img className="logo-light" src={'/Nasiye logo.png'} alt="logo-light" height={18} />
             </div>
             <small>11 mins ago</small>
           </ToastHeader>
@@ -75,8 +73,8 @@ const StackingToast = () => {
         <Toast autohide show={isOpenToast1} onClose={toggleToast1} id="liveToast" role="alert" aria-live="assertive" aria-atomic="true">
           <ToastHeader closeButton>
             <div className="auth-logo me-auto">
-              <img className="logo-dark" src={logoDark} alt="logo-dark" height={18} />
-              <img className="logo-light" src={logoLight} alt="logo-light" height={18} />
+              <img className="logo-dark" src={'/Nasiye logo.png'} alt="logo-dark" height={18} />
+              <img className="logo-light" src={'/Nasiye logo.png'} alt="logo-light" height={18} />
             </div>
             <small className="text-muted">just now</small>
           </ToastHeader>
@@ -85,8 +83,8 @@ const StackingToast = () => {
         <Toast autohide delay={2000} show={isOpenToast2} onClose={toggleToast2} id="liveToast2" role="alert" aria-live="assertive" aria-atomic="true">
           <ToastHeader closeButton>
             <div className="auth-logo me-auto">
-              <img className="logo-dark" src={logoDark} alt="logo-dark" height={18} />
-              <img className="logo-light" src={logoLight} alt="logo-light" height={18} />
+              <img className="logo-dark" src={'/Nasiye logo.png'} alt="logo-dark" height={18} />
+              <img className="logo-light" src={'/Nasiye logo.png'} alt="logo-light" height={18} />
             </div>
             <small className="text-muted">2 seconds ago</small>
           </ToastHeader>
@@ -178,8 +176,8 @@ const TranslucentToast = () => {
         <Toast onClose={hideTranslucent} delay={8000} show={isOpenTranslucent} className="fade" role="alert">
           <ToastHeader closeButton>
             <div className="auth-logo me-auto">
-              <img className="logo-dark" src={logoDark} alt="logo-dark" height={18} />
-              <img className="logo-light" src={logoLight} alt="logo-light" height={18} />
+              <img className="logo-dark" src={'/Nasiye logo.png'} alt="logo-dark" height={18} />
+              <img className="logo-light" src={'/Nasiye logo.png'} alt="logo-light" height={18} />
             </div>
             <div className="float-end">
               <small>11 mins ago</small>

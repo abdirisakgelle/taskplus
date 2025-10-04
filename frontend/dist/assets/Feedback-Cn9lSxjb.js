@@ -1,1 +1,0 @@
-import{P as s,r as c,j as i,a as d}from"./index-AWqnUruu.js";const m={type:s.string,tooltip:s.bool,as:s.elementType},e=c.forwardRef(({as:a="div",className:o,type:p="valid",tooltip:t=!1,...r},l)=>i.jsx(a,{...r,ref:l,className:d(o,`${p}-${t?"tooltip":"feedback"}`)}));e.displayName="Feedback";e.propTypes=m;export{e as F};

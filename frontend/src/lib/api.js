@@ -43,7 +43,11 @@ export async function api(path, options = {}) {
         return;
       }
       
-      throw new Error(errorMessage);
+      // Create error with full error object for field-level validation
+      const error = new Error(errorMessage);
+      error.response = json;
+      error.errors = json?.error?.errors;
+      throw error;
     }
     
     return json;
@@ -87,6 +91,13 @@ export const apiPut = (path, data) => {
 
 export const apiDelete = (path) => {
   return api(path, { method: 'DELETE' });
+};
+
+export const apiPatch = (path, data) => {
+  return api(path, {
+    method: 'PATCH',
+    body: JSON.stringify(data)
+  });
 };
 
 // Auth-specific API calls
@@ -196,4 +207,76 @@ export const accessApi = {
 
   getSections: () =>
     apiGet('/access/sections')
+};
+
+// Support API calls
+export const supportApi = {
+  // Tickets
+  getTickets: (params = {}) => 
+    apiGet('/tickets', params),
+  
+  getTicket: (id) => 
+    apiGet(`/tickets/${id}`),
+  
+  createTicket: (data) => 
+    apiPost('/tickets', data),
+  
+    updateTicket: (id, data) => 
+      apiPatch(`/tickets/${id}`, data),
+    
+    deleteTicket: (id) => 
+      api(`/tickets/${id}`, { method: 'DELETE' }),
+    
+    reopenTicket: (id) => 
+      apiPatch(`/tickets/${id}/reopen`, {}),
+  
+  getStuckTickets: () => 
+    apiGet('/tickets/stuck/tickets'),
+
+  // Follow-ups
+  getFollowUps: (params = {}) => 
+    apiGet('/follow-ups', params),
+  
+  getPendingFollowUps: (params = {}) => 
+    apiGet('/follow-ups/pending', params),
+  
+  getFollowUp: (id) => 
+    apiGet(`/follow-ups/${id}`),
+  
+  createFollowUp: (data) => 
+    apiPost('/follow-ups', data),
+  
+  updateFollowUp: (id, data) => 
+    apiPatch(`/follow-ups/${id}`, data),
+  
+  markSolved: (id, data) => 
+    apiPatch(`/follow-ups/${id}/solved`, data),
+  
+  markNotSolved: (id, data) => 
+    apiPatch(`/follow-ups/${id}/not-solved`, data),
+  
+  noAnswer: (id, data) => 
+    apiPatch(`/follow-ups/${id}/no-answer`, data),
+  
+  assignToMe: (id) => 
+    apiPatch(`/follow-ups/${id}/assign-to-me`, {}),
+
+  // Reviews
+  getReviews: (params = {}) => 
+    apiGet('/reviews', params),
+  
+  getReview: (id) => 
+    apiGet(`/reviews/${id}`),
+  
+  createReview: (data) => 
+    apiPost('/reviews', data),
+  
+  updateReview: (id, data) => 
+    apiPatch(`/reviews/${id}`, data),
+  
+  getStuckTicketsForReview: () => 
+    apiGet('/reviews/stuck/tickets'),
+  
+  resolveReview: (id, data) => 
+    apiPatch(`/reviews/${id}/resolve`, data)
 };
